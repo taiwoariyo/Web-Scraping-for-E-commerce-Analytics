@@ -28,7 +28,6 @@ import logging
 # Setup logging for debugging
 logging.basicConfig(level=logging.DEBUG)
 
-
 # Setup WebDriver for dynamic pages (e.g., Amazon, eBay, AliExpress, Walmart)
 def setup_driver(headless=True):
     chrome_options = Options()
@@ -45,24 +44,50 @@ def scrape_amazon(url, headless=True):
     driver.get(url)
 
     try:
+        # Wait for the product title to be loaded to ensure the page is fully rendered
         WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.ID, "productTitle")))
     except Exception as e:
         logging.error(f"Error while loading the page: {e}")
         driver.quit()
         return {"title": None, "price": None, "rating": None, "url": url}
 
-    soup = BeautifulSoup(driver.page_source, "html.parser")
+    # Log the page source (useful for debugging)
+    page_source = driver.page_source
+    logging.debug(f"Page Source: {page_source[:1000]}")  # Log the first 1000 characters for debugging
 
+    soup = BeautifulSoup(page_source, "html.parser")
+
+    # Extract title
     try:
         title = soup.find("span", {"id": "productTitle"}).text.strip()
     except AttributeError:
         title = None
 
+    # Try multiple selectors to extract the price
+    price = None
     try:
-        price = soup.find("span", {"id": "priceblock_ourprice"}).text.strip()
+        # First, try to get the "regular" price
+        price = soup.find("span", {"id": "priceblock_ourprice"})
+        if price:
+            price = price.text.strip()
+        else:
+            # Try to find alternative price (e.g., "priceblock_dealprice")
+            price = soup.find("span", {"id": "priceblock_dealprice"})
+            if price:
+                price = price.text.strip()
+            else:
+                # Try another common price block (for example "a-price" or "priceblock_ourprice" in case of sale items)
+                price = soup.find("span", {"class": "a-price-whole"})
+                if price:
+                    price = price.text.strip()
     except AttributeError:
         price = None
 
+    # Check if the price is still None and log it for debugging
+    if not price:
+        logging.error("Price not found for Amazon product.")
+
+    # Extract rating
     try:
         rating = soup.find("span", {"id": "acrPopover"}).text.strip()
     except AttributeError:
@@ -207,22 +232,58 @@ def scrape_data(ecommerce_site, urls):
 
 # Data cleaning function
 def clean_data(df):
+    # Check if price and rating are correctly cleaned and converted
     df['price'] = df['price'].apply(lambda x: re.sub(r'[^\d.]', '', str(x)) if x is not None else None)
     df['rating'] = df['rating'].apply(lambda x: re.sub(r'[^\d.]', '', str(x)) if x is not None else None)
+
+    # Convert to numeric, coercing errors to NaN
     df['price'] = pd.to_numeric(df['price'], errors='coerce')
     df['rating'] = pd.to_numeric(df['rating'], errors='coerce')
+
+    # Debug output: Show the cleaned data
+    logging.debug(f"Cleaned data:\n{df[['title', 'price', 'rating']].head()}")
+
     return df
 
 
 # Visualization function for price trends
 def visualize_price_trends(df):
-    plt.figure(figsize=(10, 6))
-    plt.plot(df['title'], df['price'], marker='o', linestyle='-', color='b')
-    plt.title("Price Trends Across Products")
-    plt.xlabel("Product")
-    plt.ylabel("Price")
-    plt.xticks(rotation=90)
-    plt.show()
+    # Debugging: Check if the price column has valid data
+    logging.debug(f"Price column before plotting:\n{df['price']}")
+
+    # Only plot if there are valid prices
+    if df['price'].notna().any():
+        plt.figure(figsize=(10, 6))
+        plt.plot(df['title'], df['price'], marker='o', linestyle='-', color='b')
+        plt.title("Price Trends Across Products")
+        plt.xlabel("Product")
+        plt.ylabel("Price")
+        plt.xticks(rotation=90)
+        plt.tight_layout()
+
+        # Display plot in Streamlit
+        st.pyplot(plt)
+    else:
+        st.warning("No valid price data available to plot.")
+
+
+# Main function to scrape data
+def scrape_data(ecommerce_site, urls):
+    data = []
+
+    for url in urls:
+        if ecommerce_site == 'Amazon':
+            data.append(scrape_amazon(url))
+        elif ecommerce_site == 'eBay':
+            data.append(scrape_ebay(url))
+        elif ecommerce_site == 'AliExpress':
+            data.append(scrape_aliexpress(url))
+        elif ecommerce_site == 'Walmart':
+            data.append(scrape_walmart(url))
+
+        time.sleep(2)  # To avoid getting blocked by websites
+
+    return pd.DataFrame(data)
 
 
 # Streamlit Web Interface
@@ -255,7 +316,6 @@ def main():
 
         else:
             st.warning("Please enter at least one URL to scrape.")
-
 
 if __name__ == "__main__":
     main()
